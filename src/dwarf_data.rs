@@ -30,7 +30,7 @@ impl From<gimli_wrapper::Error> for Error {
 impl DwarfData {
     pub fn from_file(path: &str) -> Result<DwarfData, Error> {
         let file = fs::File::open(path).or(Err(Error::ErrorOpeningFile))?;
-        let mmap = unsafe { memmap::Mmap::map(&file).or(Err(Error::ErrorOpeningFile))? };
+        let mmap = unsafe { memmap2::Mmap::map(&file).or(Err(Error::ErrorOpeningFile))? };
         let object = object::File::parse(&*mmap)
             .or_else(|e| Err(gimli_wrapper::Error::ObjectError(e.to_string())))?;
         let endian = if object.is_little_endian() {
@@ -151,14 +151,14 @@ impl DwarfData {
 #[derive(Debug, Clone, Default)]
 pub struct Type {
     pub name: String,
-    pub size: usize,
+    pub _size: usize,
 }
 
 impl Type {
     pub fn new(name: String, size: usize) -> Self {
         Type {
             name: name,
-            size: size,
+            _size: size,
         }
     }
 }
@@ -222,5 +222,3 @@ impl fmt::Display for Line {
         write!(f, "{}:{}", self.file, self.number)
     }
 }
-
-

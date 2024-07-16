@@ -5,6 +5,8 @@ use nix::unistd::Pid;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command};
 
+use crate::dwarf_data::DwarfData;
+
 pub enum Status {
     /// Indicates inferior stopped. Contains the signal that stopped the process, as well as the
     /// current instruction pointer that it is stopped at.
@@ -37,9 +39,7 @@ impl Inferior {
     pub fn new(target: &str, args: &Vec<String>) -> Option<Inferior> {
         let mut cmd = Command::new(target);
         cmd.args(args);
-        unsafe {
-            cmd.pre_exec(child_traceme)
-        };
+        unsafe { cmd.pre_exec(child_traceme) };
         match cmd.spawn() {
             Ok(child) => Some(Inferior { child }),
             Err(e) => panic!("{:?}", e),
@@ -51,8 +51,8 @@ impl Inferior {
         self.wait(None)
     }
 
-     /// Kill the inferior(child process).
-     pub fn kill(&mut self) -> Result<(), std::io::Error> {
+    /// Kill the inferior(child process).
+    pub fn kill(&mut self) -> Result<(), std::io::Error> {
         println!("Killing running inferior (pid {})", self.pid());
         self.child.kill()
     }
@@ -74,5 +74,23 @@ impl Inferior {
             }
             other => panic!("waitpid returned unexpected status: {:?}", other),
         })
+    }
+
+    pub fn print_backtrace(&self, debug_data: &DwarfData) -> Result<(), nix::Error> {
+        let regs = ptrace::getregs(self.pid())?;
+        let mut rip = regs.rip.try_into().unwrap();
+        let mut rbp = regs.rbp.try_into().unwrap();
+
+        loop {
+            let function = debug_data.get_function_from_addr(rip).unwrap();
+            let line = debug_data.get_line_from_addr(rip).unwrap();
+            println!("{} ({})", function, line);
+            if function == "main" {
+                break;
+            }
+            rip = ptrace::read(self.pid(), (rbp + 8) as ptrace::AddressType)? as usize;
+            rbp = ptrace::read(self.pid(), rbp as ptrace::AddressType)? as usize;
+        }
+        Ok(())
     }
 }
