@@ -1,8 +1,10 @@
+use crate::debugger::Breakpoint;
 use crate::dwarf_data::DwarfData;
 use nix::sys::ptrace;
 use nix::sys::signal;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
+use std::collections::HashMap;
 use std::mem::size_of;
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command};
@@ -34,13 +36,16 @@ fn child_traceme() -> Result<(), std::io::Error> {
 
 pub struct Inferior {
     child: Child,
-
 }
 
 impl Inferior {
     /// Attempts to start a new inferior process. Returns Some(Inferior) if successful, or None if
     /// an error is encountered.
-    pub fn new(target: &str, args: &Vec<String>, breakpoints: &Vec<usize>) -> Option<Inferior> {
+    pub fn new(
+        target: &str,
+        args: &Vec<String>,
+        breakpoints: &mut HashMap<usize, Option<Breakpoint>>,
+    ) -> Option<Inferior> {
         let mut cmd = Command::new(target);
         cmd.args(args);
         unsafe {
@@ -49,11 +54,20 @@ impl Inferior {
         match cmd.spawn() {
             Ok(child) => {
                 let mut inferior = Inferior { child };
-                for breakpoint in breakpoints {
+                for (addr, breakpoint) in breakpoints {
                     // replacing the byte at breakpoint with the value 0xcc
-                    inferior.write_byte(*breakpoint, 0xcc).ok();
+                    // and record the original instrction's first byte
+                    match inferior.write_byte(*addr, 0xcc) {
+                        Ok(orig_byte) => {
+                            *breakpoint = Some(Breakpoint {
+                                addr: *addr,
+                                orig_byte,
+                            });
+                        }
+                        Err(_) => println!("Inferior::new can't write_byte {}", addr),
+                    }
                 }
-                Some(inferior) 
+                Some(inferior)
             }
             Err(_) => None,
         }
@@ -66,6 +80,7 @@ impl Inferior {
         let orig_byte = (word >> 8 * byte_offset) & 0xff;
         let masked_word = word & !(0xff << 8 * byte_offset);
         let updated_word = masked_word | ((val as u64) << 8 * byte_offset);
+
         unsafe {
             ptrace::write(
                 self.pid(),
@@ -76,7 +91,36 @@ impl Inferior {
         Ok(orig_byte as u8)
     }
 
-    pub fn continue_exec(&self) -> Result<Status, nix::Error> {
+    pub fn continue_exec(
+        &mut self,
+        breakpoints: &HashMap<usize, Option<Breakpoint>>,
+    ) -> Result<Status, nix::Error> {
+        let mut regs = ptrace::getregs(self.pid())?;
+        let rip: usize = regs.rip.try_into().unwrap(); // rip as usize
+                                                       // check if inferior stopped at a breakpoint
+        if let Some(breakpoint) = breakpoints.get(&(rip - 1)) {
+            if let Some(bp) = breakpoint {
+                let orig_byte = bp.orig_byte;
+                println!("[inferior.continue_exec] Stopped at a breakpoint");
+                // restore the first byte of the instruction we replaced
+                self.write_byte(rip - 1, orig_byte).unwrap();
+                // set %rip = %rip - 1 to rewind the instruction pointer
+                regs.rip = (rip - 1) as u64;
+                ptrace::setregs(self.pid(), regs).unwrap();
+                // go to the next instruction
+                ptrace::step(self.pid(), None).unwrap();
+                // wait for inferior to stop due to SIGTRAP, just return if the inferior terminates here
+                match self.wait(None).unwrap() {
+                    Status::Exited(exit_code) => return Ok(Status::Exited(exit_code)),
+                    Status::Signaled(signal) => return Ok(Status::Signaled(signal)),
+                    Status::Stopped(_, _) => {
+                        // restore 0xcc in the breakpoint location
+                        self.write_byte(rip - 1, 0xcc).unwrap();
+                    }
+                }
+            }
+        }
+
         ptrace::cont(self.pid(), None)?; // Restart the stopped tracee process
         self.wait(None)
     }
