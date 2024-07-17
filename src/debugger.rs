@@ -1,10 +1,18 @@
 use crate::debugger_command::DebuggerCommand;
+use crate::dwarf_data::{DwarfData, Error as DwarfError};
 use crate::inferior::{Inferior, Status};
-use nix::sys::ptrace;
+// use libc::getaddrinfo;
+// use nix::sys::ptrace;
 use rustyline::error::ReadlineError;
 use rustyline::history::FileHistory;
 use rustyline::Editor;
-use crate::dwarf_data::{DwarfData, Error as DwarfError};
+use std::mem::size_of;
+
+#[derive(Clone)]
+pub struct Breakpoint {
+    pub addr: usize,
+    pub orig_byte: u8,
+}
 
 pub struct Debugger {
     target: String,
@@ -12,12 +20,30 @@ pub struct Debugger {
     readline: Editor<(), FileHistory>,
     inferior: Option<Inferior>,
     debug_data: DwarfData,
+    breakpoints: Vec<usize>,
 }
+
+fn parse_address(addr: &str) -> Option<usize> {
+    // TODO(milestore 6): update this code to take different kinds of breakpoints
+    // ensure the addr starts with "*"
+    let addr = if addr.to_lowercase().starts_with("*") {
+        &addr[1..]
+    } else {
+        &addr
+    };
+    let addr_without_0x = if addr.to_lowercase().starts_with("0x") {
+        &addr[2..]
+    } else {
+        &addr
+    };
+    // println!("addr = {}", addr);
+    usize::from_str_radix(addr_without_0x, 16).ok()
+}
+
 
 impl Debugger {
     /// Initializes the debugger.
     pub fn new(target: &str) -> Debugger {
- 
         let debug_data = match DwarfData::from_file(target) {
             Ok(val) => val,
             Err(DwarfError::ErrorOpeningFile) => {
@@ -33,6 +59,7 @@ impl Debugger {
         let mut readline = Editor::<(), FileHistory>::new().expect("Create Editor fail");
         // Attempt to load history from ~/.deet_history if it exists
         let _ = readline.load_history(&history_path);
+        debug_data.print();
 
         Debugger {
             target: target.to_string(),
@@ -40,8 +67,10 @@ impl Debugger {
             readline,
             inferior: None,
             debug_data,
+            breakpoints: vec![],
         }
     }
+
 
     pub fn run(&mut self) {
         loop {
@@ -51,7 +80,7 @@ impl Debugger {
                     if let Some(inferior) = &mut self.inferior {
                         inferior.kill().expect("inferior.kill wasn't running");
                     }
-                    if let Some(inferior) = Inferior::new(&self.target, &args) {
+                    if let Some(inferior) = Inferior::new(&self.target, &args, &self.breakpoints) {
                         // Create the inferior
                         self.inferior = Some(inferior);
                         self.continue_exec();
@@ -68,7 +97,7 @@ impl Debugger {
                         println!("There is no inferior running");
                     }
                 }
-                
+
                 DebuggerCommand::Backtrace => {
                     if let Some(inferior) = &self.inferior {
                         inferior.print_backtrace(&self.debug_data).unwrap();
@@ -81,6 +110,16 @@ impl Debugger {
                         inferior.kill().expect("inferior.kill wasn't running");
                     }
                     return;
+                }
+
+                DebuggerCommand::Breakpoint(breakpoint) => {
+                    match parse_address(&breakpoint) {
+                        Some(addr_usize) => { 
+                            println!("Set breakpoint {} at {}", self.breakpoints.len(), addr_usize);
+                            self.breakpoints.push(addr_usize);
+                        }
+                        None => println!("fail to parse a usize from a hexadecimal string"),
+                    }
                 }
             }
         }
@@ -98,8 +137,11 @@ impl Debugger {
                         self.inferior = None;
                         println!("Child exited (signal {})", signal);
                     }
-                    Status::Stopped(signal, _) => {
-                        println!("Child stopped (signal {})", signal)
+                    Status::Stopped(signal, rip) => {
+                        println!("Child stopped (signal {})", signal);
+                        if let Some(line) = self.debug_data.get_line_from_addr(rip) {
+                            println!("Stopped at {}", line);
+                        }
                     }
                 },
                 Err(err) => println!("Inferior can't be woken up and execute: {}", err),
@@ -132,7 +174,7 @@ impl Debugger {
                         continue;
                     }
                     self.readline.add_history_entry(line.as_str());
-                    
+
                     if let Err(err) = self.readline.save_history(&self.history_path) {
                         println!(
                             "Warning: failed to save history file at {}: {}",

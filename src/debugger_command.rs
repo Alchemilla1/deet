@@ -3,7 +3,7 @@ pub enum DebuggerCommand {
     Run(Vec<String>),
     Continue,
     Backtrace,
-    // Breakpoint(String),
+    Breakpoint(String),
 }
 
 impl DebuggerCommand {
@@ -19,9 +19,9 @@ impl DebuggerCommand {
             "c" | "cont" | "continue" => Some(DebuggerCommand::Continue),
             "bt" | "back" | "backtrace" => Some(DebuggerCommand::Backtrace),
             
-            // "b" | "break" | "breakpoint" => {
-            //     Some(DebuggerCommand::Breakpoint(tokens[1].to_string()))
-            // }
+            "b" | "break" | "breakpoint" => {
+                Some(DebuggerCommand::Breakpoint(tokens[1].to_string()))
+            }
 
             // Default case:
             _ => None,
