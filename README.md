@@ -1,5 +1,6 @@
 ### Deet Debugger.
-__A project in CS110l. program in rust__
+__A project in CS110l. program in rust__ 
+<br>
 A simple c debugger, with capacities below:
 * run basic c programs and output.
 * stopping, resuming, and restarting the inferior.
